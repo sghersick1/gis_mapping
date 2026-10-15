@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 // map imports
-import { Map as MapLibreMap } from "maplibre-gl";
+import { Map as MapLibreMap, Marker } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./App.css";
 
@@ -34,6 +34,25 @@ function App() {
           },
         ],
       },
+    });
+
+    const pins: Marker[] = [];
+    const tol = 0.01;
+
+    map.on("click", (event) => {
+      const cur = event.lngLat;
+
+      // Replace nearby pins
+      pins
+        .filter(
+          (pin) =>
+            Math.abs(cur.lat - pin._lngLat.lat) < tol ||
+            Math.abs(cur.lng - pin._lngLat.lng) < tol,
+        )
+        .forEach((pin) => pin.remove());
+
+      // Add current pin
+      pins.push(new Marker().setLngLat(cur).addTo(map));
     });
 
     return () => map.remove();
