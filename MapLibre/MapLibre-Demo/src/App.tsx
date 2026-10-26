@@ -1,7 +1,7 @@
 /*
 # File: App.tsx
 # Date: October 14, 2026
-# Purpose: Shows the satellite map, polygon drawing, and the USDA soil overlay for the drawn area.
+# Purpose: Shows the satellite map, saved polygon drawings, and the USDA soil overlay for the drawn area.
 */
 
 import { useEffect, useRef, useState } from "react";
@@ -18,6 +18,7 @@ import {
   type SoilProperties,
 } from "./soil/fetchSoil";
 import type { Position } from "./soil/wkt";
+import { loadDrawnPolygons, saveDrawnPolygons } from "./draw/storedPolygons";
 
 type SoilStatus =
   | { state: "idle" }
@@ -177,6 +178,9 @@ function App() {
 
     map.once("load", () => {
       map.addControl(draw);
+      const stored = loadDrawnPolygons();
+      if (stored.features.length > 0) draw.add(stored);
+      scheduleSoilLoad();
 
       // Draw's stylesheet targets Mapbox class names. MapLibre uses maplibregl-*.
       const container = map.getContainer();
@@ -234,9 +238,13 @@ function App() {
       });
     });
 
-    for (const eventName of ["draw.create", "draw.update", "draw.delete", "draw.selectionchange"]) {
-      map.on(eventName as "load", scheduleSoilLoad);
+    for (const eventName of ["draw.create", "draw.update", "draw.delete"]) {
+      map.on(eventName as "load", () => {
+        saveDrawnPolygons(draw.getAll().features);
+        scheduleSoilLoad();
+      });
     }
+    map.on("draw.selectionchange" as "load", scheduleSoilLoad);
 
     // navigate map by scrolling
     map.on("wheel", (event) => {

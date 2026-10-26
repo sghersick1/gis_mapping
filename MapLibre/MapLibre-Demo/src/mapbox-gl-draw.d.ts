@@ -41,6 +41,7 @@ declare module "@mapbox/mapbox-gl-draw" {
     onAdd(map: Map): HTMLElement;
     onRemove(map: Map): void;
     getDefaultPosition(): ControlPosition;
+    add(featureCollection: DrawFeatureCollection): string[];
     getAll(): DrawFeatureCollection;
     getMode(): string;
     getSelected(): DrawFeatureCollection;
