@@ -103,6 +103,7 @@ export async function fetchSoilInPolygon(
   } catch {
     throw new Error("USDA returned soil data that could not be read.");
   }
+  console.log(table);
   if (!Array.isArray(table) || table.length === 0) {
     throw new Error("USDA returned soil data that could not be read.");
   }
