@@ -1,0 +1,16 @@
+---
+description: Require a creation header comment at the top of new source files
+alwaysApply: true
+---
+
+# File header comments
+
+Add this header at the top of every new source file. Use the file's creation date, and do not change that date later.
+
+```
+# File: <filename>
+# Date: <Month D, YYYY>
+# Purpose: <1-2 brief sentences>
+```
+
+Wrap those lines in the comment syntax the file type allows (`/* */` for TypeScript, JavaScript, and CSS; `<!-- -->` for HTML). Keep the `#` labels. Skip files that cannot contain comments, such as JSON, and skip generated files.
