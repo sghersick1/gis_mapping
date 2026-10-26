@@ -19,3 +19,30 @@
 /* Root page styling */
 #root {
 }
+
+.maplibregl-ctrl-group button.parcel-toggle-btn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.maplibregl-ctrl-group button.parcel-toggle-btn svg {
+  display: block;
+  margin: auto;
+}
+
+.parcel-toggle-btn:hover {
+  background: #f2f2f2;
+}
+
+.parcel-toggle-btn.is-on {
+  background: #fef3c7;
+}

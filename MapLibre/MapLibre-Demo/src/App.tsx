@@ -1,13 +1,13 @@
 /*
 # File: App.tsx
 # Date: October 14, 2026
-# Purpose: Shows the satellite map, saved polygon drawings, and the USDA soil overlay for the drawn area.
+# Purpose: Shows the satellite map, saved polygon drawings, USDA soil overlay, and Pennsylvania parcels that can be locked on the map.
 */
 
 import { useEffect, useRef, useState } from "react";
 
 import MapboxDraw from "@mapbox/mapbox-gl-draw";
-import { GeoJSONSource, Map as MapLibreMap, Marker, Popup } from "maplibre-gl";
+import { GeoJSONSource, type IControl, Map as MapLibreMap, Marker, Popup } from "maplibre-gl";
 import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
@@ -80,6 +80,7 @@ function App() {
 
     const popup = new Popup({ closeButton: true, closeOnClick: false, maxWidth: "320px" });
     let request: AbortController | undefined;
+    let parcelRequest: AbortController | undefined;
     let requestKey = "";
     let timer: number | undefined;
     let removed = false;
@@ -221,6 +222,93 @@ function App() {
         beforeDraw,
       );
 
+      map.addSource("pa-parcels", {
+        type: "raster",
+        tiles: [PA_PARCEL_TILES],
+        tileSize: 256,
+        minzoom: 11,
+      });
+      map.addLayer(
+        {
+          id: "pa-parcels",
+          type: "raster",
+          source: "pa-parcels",
+          layout: { visibility: "none" },
+        },
+        beforeDraw,
+      );
+
+      const lockedParcels = new Map<string, LockedParcel>();
+      map.addSource("locked-parcels", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer(
+        {
+          id: "locked-parcel-fill",
+          type: "fill",
+          source: "locked-parcels",
+          paint: {
+            "fill-color": "#ffd600",
+            "fill-opacity": 0.28,
+          },
+        },
+        beforeDraw,
+      );
+      map.addLayer(
+        {
+          id: "locked-parcel-line",
+          type: "line",
+          source: "locked-parcels",
+          paint: {
+            "line-color": "#ffd600",
+            "line-width": 2.5,
+          },
+        },
+        beforeDraw,
+      );
+
+      const publishLocked = () => {
+        const source = map.getSource("locked-parcels");
+        if (source instanceof GeoJSONSource) {
+          source.setData({ type: "FeatureCollection", features: [...lockedParcels.values()] });
+        }
+      };
+
+      map.on("click", (event) => {
+        if (draw.getMode() === "draw_polygon") return;
+        const eyeOpen = map.getLayoutProperty("pa-parcels", "visibility") === "visible";
+        if (!eyeOpen) {
+          const hit = map.queryRenderedFeatures(event.point, { layers: ["locked-parcel-fill"] })[0];
+          const id = hit?.properties?.id;
+          if (id == null || !lockedParcels.delete(String(id))) return;
+          publishLocked();
+          return;
+        }
+
+        parcelRequest?.abort();
+        const nextRequest = new AbortController();
+        parcelRequest = nextRequest;
+        const { lng, lat } = event.lngLat;
+        fetchParcelAt(lng, lat, nextRequest.signal)
+          .then((parcel) => {
+            if (removed || nextRequest.signal.aborted || !parcel) return;
+            lockedParcels.set(parcel.properties.id, parcel);
+            publishLocked();
+          })
+          .catch((error: unknown) => {
+            if (error instanceof DOMException && error.name === "AbortError") return;
+          });
+      });
+      map.on("mouseenter", "locked-parcel-fill", () => {
+        if (draw.getMode() !== "draw_polygon") map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "locked-parcel-fill", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
+      map.addControl(new ParcelToggleControl(), "top-right");
+
       map.on("click", "soil-fill", (event) => {
         if (draw.getMode() === "draw_polygon") return;
         const properties = event.features?.[0]?.properties as Partial<SoilProperties> | null;
@@ -268,6 +356,7 @@ function App() {
       removed = true;
       window.clearTimeout(timer);
       request?.abort();
+      parcelRequest?.abort();
       map.remove();
     };
   }, []);
@@ -405,6 +494,128 @@ function formatAcres(acres: number): string {
 
 function toRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
+}
+
+// PASDA draws this layer only at about 1:250,000 or closer (roughly zoom 11+).
+// The service has ~1.7 million parcels, so the map requests the current view
+// from the export API instead of downloading the whole state.
+const PA_PARCEL_TILES = `https://apps.pasda.psu.edu/arcgis/rest/services/PA_Parcels/MapServer/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&dynamicLayers=${encodeURIComponent(
+  JSON.stringify([
+    {
+      id: 101,
+      source: { type: "mapLayer", mapLayerId: 1 },
+      drawingInfo: {
+        renderer: {
+          type: "simple",
+          symbol: {
+            type: "esriSFS",
+            style: "esriSFSNull",
+            outline: {
+              type: "esriSLS",
+              style: "esriSLSSolid",
+              color: [255, 214, 0, 255],
+              width: 1.5,
+            },
+          },
+        },
+      },
+    },
+  ]),
+)}&f=image`;
+
+const PARCEL_QUERY =
+  "https://apps.pasda.psu.edu/arcgis/rest/services/PA_Parcels/MapServer/1/query";
+
+type LockedParcel = {
+  type: "Feature";
+  properties: { id: string; pin: string };
+  geometry: { type: "Polygon" | "MultiPolygon"; coordinates: number[][][] | number[][][][] };
+};
+
+async function fetchParcelAt(
+  longitude: number,
+  latitude: number,
+  signal: AbortSignal,
+): Promise<LockedParcel | null> {
+  const url = new URL(PARCEL_QUERY);
+  url.searchParams.set("geometry", `${longitude},${latitude}`);
+  url.searchParams.set("geometryType", "esriGeometryPoint");
+  url.searchParams.set("inSR", "4326");
+  url.searchParams.set("spatialRel", "esriSpatialRelIntersects");
+  url.searchParams.set("outFields", "OBJECTID,PIN");
+  url.searchParams.set("returnGeometry", "true");
+  url.searchParams.set("outSR", "4326");
+  url.searchParams.set("f", "geojson");
+  url.searchParams.set("resultRecordCount", "1");
+
+  const response = await fetch(url, { signal });
+  if (!response.ok) return null;
+  const data = (await response.json()) as {
+    features?: Array<{
+      properties?: { OBJECTID?: number | string; PIN?: string };
+      geometry?: LockedParcel["geometry"];
+    }>;
+  };
+  const feature = data.features?.[0];
+  const geometry = feature?.geometry;
+  const id = feature?.properties?.OBJECTID;
+  if (!geometry || id == null) return null;
+  if (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon") return null;
+  return {
+    type: "Feature",
+    properties: { id: String(id), pin: feature.properties?.PIN ?? "" },
+    geometry,
+  };
+}
+
+const EYE_OPEN = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3" fill="#111" stroke="none"/></svg>`;
+
+const EYE_CLOSED = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A10.9 10.9 0 0 1 12 6c6.5 0 10 6 10 6a18.7 18.7 0 0 1-3.2 3.8"/><path d="M6.7 6.8C4.2 8.3 2.4 10.6 2 12c0 0 3.5 6 10 6 1.3 0 2.5-.2 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>`;
+
+class ParcelToggleControl implements IControl {
+  private container?: HTMLDivElement;
+  private button?: HTMLButtonElement;
+  private map?: MapLibreMap;
+  private visible = false;
+
+  onAdd(map: MapLibreMap) {
+    this.map = map;
+    const container = document.createElement("div");
+    container.className =
+      "maplibregl-ctrl maplibregl-ctrl-group mapboxgl-ctrl mapboxgl-ctrl-group";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "parcel-toggle-btn";
+    button.addEventListener("click", () => {
+      this.visible = !this.visible;
+      this.map?.setLayoutProperty(
+        "pa-parcels",
+        "visibility",
+        this.visible ? "visible" : "none",
+      );
+      this.render();
+    });
+    container.append(button);
+    this.container = container;
+    this.button = button;
+    this.render();
+    return container;
+  }
+
+  onRemove() {
+    this.container?.remove();
+    this.map = undefined;
+  }
+
+  private render() {
+    if (!this.button) return;
+    const label = this.visible ? "Hide Pennsylvania parcels" : "Show Pennsylvania parcels";
+    this.button.title = label;
+    this.button.setAttribute("aria-label", label);
+    this.button.setAttribute("aria-pressed", String(this.visible));
+    this.button.innerHTML = this.visible ? EYE_OPEN : EYE_CLOSED;
+    this.button.classList.toggle("is-on", this.visible);
+  }
 }
 
 function statusForSoil(data: SoilFeatureCollection): SoilStatus {
